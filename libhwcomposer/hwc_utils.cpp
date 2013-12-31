@@ -108,13 +108,6 @@ static int openFramebufferDevice(hwc_context_t *ctx)
     ctx->dpyAttr[HWC_DISPLAY_PRIMARY].ydpi = ydpi;
     ctx->dpyAttr[HWC_DISPLAY_PRIMARY].vsync_period = 1000000000l / fps;
 
-    //Unblank primary on first boot
-    if(ioctl(fb_fd, FBIOBLANK,FB_BLANK_UNBLANK) < 0) {
-        ALOGE("%s: Failed to unblank display", __FUNCTION__);
-        return -errno;
-    }
-    ctx->dpyAttr[HWC_DISPLAY_PRIMARY].isActive = true;
-
     return 0;
 }
 
@@ -219,7 +212,7 @@ void initContext(hwc_context_t *ctx)
     //For external it could get created and destroyed multiple times depending
     //on what external we connect to.
     ctx->mFBUpdate[HWC_DISPLAY_PRIMARY] =
-        IFBUpdate::getObject(ctx->dpyAttr[HWC_DISPLAY_PRIMARY].xres,
+        IFBUpdate::getObject(ctx, ctx->dpyAttr[HWC_DISPLAY_PRIMARY].xres,
         HWC_DISPLAY_PRIMARY);
 
     // Check if the target supports copybit compostion (dyn/mdp/c2d) to
@@ -230,7 +223,8 @@ void initContext(hwc_context_t *ctx)
     if (compositionType & (qdutils::COMPOSITION_TYPE_DYN |
                            qdutils::COMPOSITION_TYPE_MDP |
                            qdutils::COMPOSITION_TYPE_C2D)) {
-            ctx->mCopyBit[HWC_DISPLAY_PRIMARY] = new CopyBit();
+            ctx->mCopyBit[HWC_DISPLAY_PRIMARY] = new CopyBit(ctx,
+                    HWC_DISPLAY_PRIMARY);
     }
 
     ctx->mExtDisplay = new ExternalDisplay(ctx);
@@ -749,6 +743,7 @@ void setListStats(hwc_context_t *ctx,
     ctx->listStats[dpy].yuvCount = 0;
     ctx->listStats[dpy].extOnlyLayerIndex = -1;
     ctx->listStats[dpy].isDisplayAnimating = false;
+    ctx->listStats[dpy].secureUI = false;
 
     optimizeLayerRects(ctx, list, dpy);
 
@@ -759,6 +754,9 @@ void setListStats(hwc_context_t *ctx,
 #ifdef QCOM_BSP
         if (layer->flags & HWC_SCREENSHOT_ANIMATOR_LAYER) {
             ctx->listStats[dpy].isDisplayAnimating = true;
+        }
+        if(isSecureDisplayBuffer(hnd)) {
+            ctx->listStats[dpy].secureUI = true;
         }
 #endif
         // continue if number of app layers exceeds MAX_NUM_APP_LAYERS
@@ -1105,6 +1103,7 @@ int hwc_sync(hwc_context_t *ctx, hwc_display_contents_1_t* list, int dpy,
     int rotFd = -1;
     bool swapzero = false;
     int mdpVersion = qdutils::MDPVersion::getInstance().getMDPVersion();
+    LayerProp *layerProp = ctx->layerProp[dpy];
 
     struct mdp_buf_sync data;
     memset(&data, 0, sizeof(data));
@@ -1157,12 +1156,14 @@ int hwc_sync(hwc_context_t *ctx, hwc_display_contents_1_t* list, int dpy,
     //Accumulate acquireFenceFds for MDP
     for(uint32_t i = 0; i < list->numHwLayers; i++) {
         if(list->hwLayers[i].compositionType == HWC_OVERLAY &&
+                        (layerProp[i].mFlags & HWC_MDPCOMP) &&
                         list->hwLayers[i].acquireFenceFd >= 0) {
             if(UNLIKELY(swapzero))
                 acquireFd[count++] = -1;
             else
                 acquireFd[count++] = list->hwLayers[i].acquireFenceFd;
         }
+
         if(list->hwLayers[i].compositionType == HWC_FRAMEBUFFER_TARGET) {
             if(UNLIKELY(swapzero))
                 acquireFd[count++] = -1;
@@ -1179,7 +1180,6 @@ int hwc_sync(hwc_context_t *ctx, hwc_display_contents_1_t* list, int dpy,
 
     data.acq_fen_fd_cnt = count;
     fbFd = ctx->dpyAttr[dpy].fd;
-
     //Waits for acquire fences, returns a release fence
     if(LIKELY(!swapzero)) {
         uint64_t start = systemTime();
@@ -1197,8 +1197,9 @@ int hwc_sync(hwc_context_t *ctx, hwc_display_contents_1_t* list, int dpy,
     }
 
     for(uint32_t i = 0; i < list->numHwLayers; i++) {
-        if(list->hwLayers[i].compositionType == HWC_OVERLAY ||
-           list->hwLayers[i].compositionType == HWC_FRAMEBUFFER_TARGET) {
+        if(((list->hwLayers[i].compositionType == HWC_OVERLAY) &&
+                (layerProp[i].mFlags & HWC_MDPCOMP)) ||
+                list->hwLayers[i].compositionType == HWC_FRAMEBUFFER_TARGET) {
             //Populate releaseFenceFds.
             if(UNLIKELY(swapzero)) {
                 list->hwLayers[i].releaseFenceFd = -1;
@@ -1270,7 +1271,7 @@ void setMdpFlags(hwc_layer_1_t *layer,
         ovutils::eMdpFlags &mdpFlags,
         int rotDownscale, int transform) {
     private_handle_t *hnd = (private_handle_t *)layer->handle;
-    MetaData_t *metadata = (MetaData_t *)hnd->base_metadata;
+    MetaData_t *metadata = hnd ? (MetaData_t *)hnd->base_metadata : NULL;
 
     if(layer->blending == HWC_BLENDING_PREMULT) {
         ovutils::setMdpFlags(mdpFlags,
@@ -1294,6 +1295,13 @@ void setMdpFlags(hwc_layer_1_t *layer,
         }
     }
 
+    if(isSecureDisplayBuffer(hnd)) {
+        // Secure display needs both SECURE_OVERLAY and SECURE_DISPLAY_OV
+        ovutils::setMdpFlags(mdpFlags,
+                             ovutils::OV_MDP_SECURE_OVERLAY_SESSION);
+        ovutils::setMdpFlags(mdpFlags,
+                             ovutils::OV_MDP_SECURE_DISPLAY_OVERLAY_SESSION);
+    }
     //No 90 component and no rot-downscale then flips done by MDP
     //If we use rot then it might as well do flips
     if(!(transform & HWC_TRANSFORM_ROT_90) && !rotDownscale) {
