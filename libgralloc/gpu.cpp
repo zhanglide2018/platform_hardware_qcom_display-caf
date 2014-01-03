@@ -140,10 +140,6 @@ int gpu_context_t::gralloc_alloc_buffer(size_t size, int usage,
             flags |= private_handle_t::PRIV_FLAGS_HW_TEXTURE;
         }
 
-        if(usage & GRALLOC_USAGE_PRIVATE_SECURE_DISPLAY) {
-            flags |= private_handle_t::PRIV_FLAGS_SECURE_DISPLAY;
-        }
-
         flags |= data.allocType;
         int eBaseAddr = int(eData.base) + eData.offset;
         private_handle_t *hnd = new private_handle_t(data.fd, size, flags,
@@ -167,7 +163,7 @@ void gpu_context_t::getGrallocInformationFromFormat(int inputFormat,
 {
     *bufferType = BUFFER_TYPE_VIDEO;
 
-    if (inputFormat <= HAL_PIXEL_FORMAT_sRGB_X_8888) {
+    if (inputFormat < 0x7) {
         // RGB formats
         *bufferType = BUFFER_TYPE_UI;
     } else if ((inputFormat == HAL_PIXEL_FORMAT_R_8) ||
@@ -262,21 +258,11 @@ int gpu_context_t::alloc_impl(int w, int h, int format, int usage,
     if(format == HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED ||
        format == HAL_PIXEL_FORMAT_YCbCr_420_888) {
         if(usage & GRALLOC_USAGE_HW_VIDEO_ENCODER)
-            grallocFormat = HAL_PIXEL_FORMAT_YCbCr_420_SP_VENUS;
-        else if((usage & GRALLOC_USAGE_HW_CAMERA_MASK)
-                == GRALLOC_USAGE_HW_CAMERA_ZSL)
-            grallocFormat = HAL_PIXEL_FORMAT_NV21_ZSL; //NV21 ZSL
+            grallocFormat = HAL_PIXEL_FORMAT_NV12_ENCODEABLE; //NV12
         else if(usage & GRALLOC_USAGE_HW_CAMERA_READ)
             grallocFormat = HAL_PIXEL_FORMAT_YCrCb_420_SP; //NV21
         else if(usage & GRALLOC_USAGE_HW_CAMERA_WRITE)
             grallocFormat = HAL_PIXEL_FORMAT_YCrCb_420_SP; //NV21
-    }
-
-    if (format == HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED &&
-            (usage & GRALLOC_USAGE_HW_COMPOSER )) {
-        //XXX: If we still haven't set a format, default to
-        //RGBA8888
-        grallocFormat = HAL_PIXEL_FORMAT_RGBA_8888;
     }
 
     getGrallocInformationFromFormat(grallocFormat, &bufferType);

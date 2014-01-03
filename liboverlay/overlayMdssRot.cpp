@@ -85,11 +85,6 @@ void MdssRot::setSource(const overlay::utils::Whf& awhf) {
     mRotInfo.dst_rect.h = whf.h;
 }
 
-void MdssRot::setSource(const overlay::utils::Whf& awhf,
-                       const overlay::utils::Whf& owhf) {
-    setSource(awhf);
-}
-
 void MdssRot::setDownscale(int ds) {}
 
 void MdssRot::setFlags(const utils::eMdpFlags& flags) {

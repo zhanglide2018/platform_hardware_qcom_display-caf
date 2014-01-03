@@ -27,7 +27,7 @@ namespace qhwc {
 
 class CopyBit {
 public:
-    CopyBit(hwc_context_t *ctx, const int& dpy);
+    CopyBit();
     ~CopyBit();
     // API to get copybit engine(non static)
     struct copybit_device_t *getCopyBitDevice();
@@ -77,13 +77,12 @@ private:
     // Index of the current intermediate render buffer
     int mCurRenderBufferIndex;
 
-    // Release FDs of the intermediate render buffer
-    int mRelFd[NUM_RENDER_BUFFERS];
+    //These are the the release FDs of the T-2 and T-1 round
+    //We wait on the T-2 fence
+    int mRelFd[2];
 
     //Dynamic composition threshold for deciding copybit usage.
     double mDynThreshold;
-    int mAlignedFBWidth;
-    int mAlignedFBHeight;
 };
 
 }; //namespace qhwc
