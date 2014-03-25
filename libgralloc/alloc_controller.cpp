@@ -79,9 +79,10 @@ static bool canFallback(int usage, bool triedSystem)
 
 static bool useUncached(int usage)
 {
-    if (usage & GRALLOC_USAGE_PRIVATE_UNCACHED ||
-        usage & GRALLOC_USAGE_SW_WRITE_RARELY  ||
-        usage & GRALLOC_USAGE_SW_READ_RARELY)
+    if (usage & GRALLOC_USAGE_PRIVATE_UNCACHED)
+        return true;
+    if(((usage & GRALLOC_USAGE_SW_WRITE_MASK) == GRALLOC_USAGE_SW_WRITE_RARELY)
+       ||((usage & GRALLOC_USAGE_SW_READ_MASK) == GRALLOC_USAGE_SW_READ_RARELY))
         return true;
     return false;
 }
@@ -107,7 +108,7 @@ int AdrenoMemInfo::getStride(int width, int format)
 {
     int stride = ALIGN(width, 32);
     // Currently surface padding is only computed for RGB* surfaces.
-    if (format < 0x7) {
+    if (format <= HAL_PIXEL_FORMAT_sRGB_X_8888) {
         int bpp = 4;
         switch(format)
         {
@@ -115,8 +116,6 @@ int AdrenoMemInfo::getStride(int width, int format)
                 bpp = 3;
                 break;
             case HAL_PIXEL_FORMAT_RGB_565:
-            case HAL_PIXEL_FORMAT_RGBA_5551:
-            case HAL_PIXEL_FORMAT_RGBA_4444:
                 bpp = 2;
                 break;
             default: break;
@@ -156,6 +155,9 @@ int AdrenoMemInfo::getStride(int width, int format)
                 break;
             case HAL_PIXEL_FORMAT_BLOB:
                 stride = width;
+                break;
+            case HAL_PIXEL_FORMAT_NV21_ZSL:
+                stride = ALIGN(width, 64);
                 break;
             default: break;
         }
@@ -207,13 +209,14 @@ int IonController::allocate(alloc_data& data, int usage)
 #endif
     }
 
+#ifndef NO_IOMMU
     if(usage & GRALLOC_USAGE_PRIVATE_IOMMU_HEAP) {
         ionFlags |= ION_HEAP(ION_IOMMU_HEAP_ID);
 #ifndef SECURE_MM_HEAP
         noncontig = true;
 #endif
     }
-
+#endif
 
 #ifdef SECURE_MM_HEAP
     if(usage & GRALLOC_USAGE_PROTECTED) {
@@ -240,6 +243,9 @@ int IonController::allocate(alloc_data& data, int usage)
 #endif
     }
 
+    if(usage & GRALLOC_USAGE_PRIVATE_CAMERA_HEAP)
+        ionFlags |= ION_HEAP(ION_CAMERA_HEAP_ID);
+
     if(usage & GRALLOC_USAGE_PRIVATE_ADSP_HEAP)
         ionFlags |= ION_HEAP(ION_ADSP_HEAP_ID);
 
@@ -255,8 +261,12 @@ int IonController::allocate(alloc_data& data, int usage)
     // SF + IOMMU heaps, so that bypass can work
     // we can fall back to system heap if
     // we run out.
-    if(!ionFlags)
-        ionFlags = ION_HEAP(ION_SF_HEAP_ID) | ION_HEAP(ION_IOMMU_HEAP_ID);
+    if(!ionFlags) {
+        ionFlags = ION_HEAP(ION_SF_HEAP_ID);
+#ifndef NO_IOMMU
+        ionFlags |= ION_HEAP(ION_IOMMU_HEAP_ID);
+#endif
+    }
 
     data.flags = ionFlags;
     ret = mIonAlloc->alloc_buffer(data);
@@ -309,14 +319,14 @@ size_t getBufferSizeAndDimensions(int width, int height, int format,
         case HAL_PIXEL_FORMAT_RGBA_8888:
         case HAL_PIXEL_FORMAT_RGBX_8888:
         case HAL_PIXEL_FORMAT_BGRA_8888:
+        case HAL_PIXEL_FORMAT_sRGB_A_8888:
+        case HAL_PIXEL_FORMAT_sRGB_X_8888:
             size = alignedw * alignedh * 4;
             break;
         case HAL_PIXEL_FORMAT_RGB_888:
             size = alignedw * alignedh * 3;
             break;
         case HAL_PIXEL_FORMAT_RGB_565:
-        case HAL_PIXEL_FORMAT_RGBA_5551:
-        case HAL_PIXEL_FORMAT_RGBA_4444:
         case HAL_PIXEL_FORMAT_RAW_SENSOR:
             size = alignedw * alignedh * 2;
             break;
@@ -353,7 +363,7 @@ size_t getBufferSizeAndDimensions(int width, int height, int format,
         case HAL_PIXEL_FORMAT_YCbCr_420_SP:
         case HAL_PIXEL_FORMAT_YCrCb_420_SP:
             alignedh = height;
-            size = ALIGN((alignedw*alignedh) + (alignedw* alignedh)/2, 4096);
+            size = ALIGN((alignedw*alignedh) + (alignedw* alignedh)/2 + 1, 4096);
             break;
         case HAL_PIXEL_FORMAT_YCbCr_422_SP:
         case HAL_PIXEL_FORMAT_YCrCb_422_SP:
@@ -379,6 +389,10 @@ size_t getBufferSizeAndDimensions(int width, int height, int format,
             alignedh = height;
             alignedw = width;
             size = width;
+            break;
+        case HAL_PIXEL_FORMAT_NV21_ZSL:
+            alignedh = ALIGN(height, 64);
+            size = ALIGN((alignedw*alignedh) + (alignedw* alignedh)/2, 4096);
             break;
         default:
             ALOGE("unrecognized pixel format: 0x%x", format);

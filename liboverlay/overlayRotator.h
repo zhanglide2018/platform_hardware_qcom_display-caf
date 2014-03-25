@@ -83,6 +83,7 @@ public:
     enum { TYPE_MDP, TYPE_MDSS };
     virtual ~Rotator();
     virtual void setSource(const utils::Whf& wfh) = 0;
+    virtual void setSource(const utils::Whf& awhf, const utils::Whf& owhf) = 0;
     virtual void setFlags(const utils::eMdpFlags& flags) = 0;
     virtual void setTransform(const utils::eTransform& rot) = 0;
     virtual bool commit() = 0;
@@ -117,6 +118,7 @@ class MdpRot : public Rotator {
 public:
     virtual ~MdpRot();
     virtual void setSource(const utils::Whf& wfh);
+    virtual void setSource(const utils::Whf& awhf, const utils::Whf& owhf);
     virtual void setFlags(const utils::eMdpFlags& flags);
     virtual void setTransform(const utils::eTransform& rot);
     virtual bool commit();
@@ -153,6 +155,8 @@ private:
 
     /* rot info*/
     msm_rotator_img_info mRotImgInfo;
+    /* Original buffer dimensions*/
+    utils::Whf mOrigWhf;
     /* Last saved rot info*/
     msm_rotator_img_info mLSRotImgInfo;
     /* rot data */
@@ -172,7 +176,8 @@ private:
 class MdssRot : public Rotator {
 public:
     virtual ~MdssRot();
-    virtual void setSource(const utils::Whf& wfh);
+    virtual void setSource(const utils::Whf& whf);
+    virtual void setSource(const utils::Whf& awhf, const utils::Whf& owhf);
     virtual void setFlags(const utils::eMdpFlags& flags);
     virtual void setTransform(const utils::eTransform& rot);
     virtual bool commit();
@@ -222,20 +227,28 @@ public:
     //Maximum sessions based on VG pipes, since rotator is used only for videos.
     //Even though we can have 4 mixer stages, that much may be unnecessary.
     enum { MAX_ROT_SESS = 3 };
-    RotMgr();
+
     ~RotMgr();
     void configBegin();
     void configDone();
     overlay::Rotator *getNext();
     void clear(); //Removes all instances
+    //Resets the usage of top count objects, making them available for reuse
+    void markUnusedTop(const uint32_t& count) { mUseCount -= count; }
     /* Returns rot dump.
      * Expects a NULL terminated buffer of big enough size.
      */
     void getDump(char *buf, size_t len);
     int getRotDevFd(); //Called on A-fam only
+
+    static RotMgr *getInstance();
+
 private:
+    RotMgr();
+    static RotMgr *sRotMgr;
+
     overlay::Rotator *mRot[MAX_ROT_SESS];
-    int mUseCount;
+    uint32_t mUseCount;
     int mRotDevFd; //A-fam
 };
 

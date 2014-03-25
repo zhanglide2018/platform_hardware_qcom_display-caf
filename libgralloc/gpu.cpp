@@ -20,7 +20,9 @@
 #include <fcntl.h>
 #include <cutils/properties.h>
 #include <sys/mman.h>
-
+#ifdef QCOM_BSP_WITH_GENLOCK
+#include <genlock.h>
+#endif
 #include "gr.h"
 #include "gpu.h"
 #include "memalloc.h"
@@ -93,6 +95,12 @@ int gpu_context_t::gralloc_alloc_buffer(size_t size, int usage,
         ALOGE_IF(eDataErr, "gralloc failed for eDataErr=%s",
                                           strerror(-eDataErr));
 
+#ifdef QCOM_BSP_WITH_GENLOCK
+        if (usage & GRALLOC_USAGE_PRIVATE_UNSYNCHRONIZED) {
+            flags |= private_handle_t::PRIV_FLAGS_UNSYNCHRONIZED;
+        }
+#endif
+
         if (usage & GRALLOC_USAGE_PRIVATE_EXTERNAL_ONLY) {
             flags |= private_handle_t::PRIV_FLAGS_EXTERNAL_ONLY;
             //The EXTERNAL_BLOCK flag is always an add-on
@@ -140,6 +148,10 @@ int gpu_context_t::gralloc_alloc_buffer(size_t size, int usage,
             flags |= private_handle_t::PRIV_FLAGS_HW_TEXTURE;
         }
 
+        if(usage & GRALLOC_USAGE_PRIVATE_SECURE_DISPLAY) {
+            flags |= private_handle_t::PRIV_FLAGS_SECURE_DISPLAY;
+        }
+
         flags |= data.allocType;
         int eBaseAddr = int(eData.base) + eData.offset;
         private_handle_t *hnd = new private_handle_t(data.fd, size, flags,
@@ -148,7 +160,9 @@ int gpu_context_t::gralloc_alloc_buffer(size_t size, int usage,
 
         hnd->offset = data.offset;
         hnd->base = int(data.base) + data.offset;
+#ifndef QCOM_BSP_WITH_GENLOCK
         hnd->gpuaddr = 0;
+#endif
 
         *pHandle = hnd;
     }
@@ -163,7 +177,7 @@ void gpu_context_t::getGrallocInformationFromFormat(int inputFormat,
 {
     *bufferType = BUFFER_TYPE_VIDEO;
 
-    if (inputFormat < 0x7) {
+    if (inputFormat <= HAL_PIXEL_FORMAT_sRGB_X_8888) {
         // RGB formats
         *bufferType = BUFFER_TYPE_UI;
     } else if ((inputFormat == HAL_PIXEL_FORMAT_R_8) ||
@@ -258,11 +272,17 @@ int gpu_context_t::alloc_impl(int w, int h, int format, int usage,
     if(format == HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED ||
        format == HAL_PIXEL_FORMAT_YCbCr_420_888) {
         if(usage & GRALLOC_USAGE_HW_VIDEO_ENCODER)
-            grallocFormat = HAL_PIXEL_FORMAT_NV12_ENCODEABLE; //NV12
+            grallocFormat = HAL_PIXEL_FORMAT_YCbCr_420_SP_VENUS;
+        else if((usage & GRALLOC_USAGE_HW_CAMERA_MASK)
+                == GRALLOC_USAGE_HW_CAMERA_ZSL)
+            grallocFormat = HAL_PIXEL_FORMAT_NV21_ZSL; //NV21 ZSL
         else if(usage & GRALLOC_USAGE_HW_CAMERA_READ)
             grallocFormat = HAL_PIXEL_FORMAT_YCrCb_420_SP; //NV21
         else if(usage & GRALLOC_USAGE_HW_CAMERA_WRITE)
             grallocFormat = HAL_PIXEL_FORMAT_YCrCb_420_SP; //NV21
+        else if(usage & GRALLOC_USAGE_HW_COMPOSER)
+            //XXX: If we still haven't set a format, default to RGBA8888
+            grallocFormat = HAL_PIXEL_FORMAT_RGBA_8888;
     }
 
     getGrallocInformationFromFormat(grallocFormat, &bufferType);
@@ -300,12 +320,23 @@ int gpu_context_t::alloc_impl(int w, int h, int format, int usage,
         return err;
     }
 
+#ifdef QCOM_BSP_WITH_GENLOCK
+    // Create a genlock lock for this buffer handle.
+    err = genlock_create_lock((native_handle_t*)(*pHandle));
+    if (err) {
+        ALOGE("%s: genlock_create_lock failed", __FUNCTION__);
+        free_impl(reinterpret_cast<private_handle_t*>(pHandle));
+        return err;
+    }
+#endif
+
     *pStride = alignedw;
     return 0;
 }
 
 int gpu_context_t::free_impl(private_handle_t const* hnd) {
     private_module_t* m = reinterpret_cast<private_module_t*>(common.module);
+
     if (hnd->flags & private_handle_t::PRIV_FLAGS_FRAMEBUFFER) {
         const size_t bufferSize = m->finfo.line_length * m->info.yres;
         int index = (hnd->base - m->framebuffer->base) / bufferSize;
@@ -326,6 +357,15 @@ int gpu_context_t::free_impl(private_handle_t const* hnd) {
         if (err)
             return err;
     }
+
+#ifdef QCOM_BSP_WITH_GENLOCK
+    // Release the genlock
+    int err = genlock_release_lock((native_handle_t*)hnd);
+    if (err) {
+        ALOGE("%s: genlock_release_lock failed", __FUNCTION__);
+    }
+#endif
+
     delete hnd;
     return 0;
 }

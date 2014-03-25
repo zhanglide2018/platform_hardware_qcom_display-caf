@@ -401,8 +401,6 @@ static int stretch_copybit(
                 // we don't support plane alpha with RGBA formats
                 case HAL_PIXEL_FORMAT_RGBA_8888:
                 case HAL_PIXEL_FORMAT_BGRA_8888:
-                case HAL_PIXEL_FORMAT_RGBA_5551:
-                case HAL_PIXEL_FORMAT_RGBA_4444:
                     ALOGE ("%s : Unsupported Pixel format %d", __FUNCTION__,
                            src->format);
                     return -EINVAL;
@@ -430,7 +428,7 @@ static int stretch_copybit(
 
         if(src->format ==  HAL_PIXEL_FORMAT_YV12) {
             int usage =
-            GRALLOC_USAGE_PRIVATE_ADSP_HEAP|GRALLOC_USAGE_PRIVATE_UNCACHED;
+            GRALLOC_USAGE_PRIVATE_CAMERA_HEAP|GRALLOC_USAGE_PRIVATE_UNCACHED;
             if (0 == alloc_buffer(&yv12_handle,src->w,src->h,
                                   src->format, usage)){
                 if(0 == convertYV12toYCrCb420SP(src,yv12_handle)){
@@ -454,7 +452,7 @@ static int stretch_copybit(
             }
         }
         const uint32_t maxCount = sizeof(list.req)/sizeof(list.req[0]);
-        const struct copybit_rect_t bounds = { 0, 0, dst->w, dst->h };
+        const struct copybit_rect_t bounds = { 0, 0, (int)dst->w, (int)dst->h };
         struct copybit_rect_t clip;
         list.count = 0;
         status = 0;
@@ -503,14 +501,15 @@ static int blit_copybit(
     struct copybit_image_t const *src,
     struct copybit_region_t const *region)
 {
-    struct copybit_rect_t dr = { 0, 0, dst->w, dst->h };
-    struct copybit_rect_t sr = { 0, 0, src->w, src->h };
+    struct copybit_rect_t dr = { 0, 0, (int)dst->w, (int)dst->h };
+    struct copybit_rect_t sr = { 0, 0, (int)src->w, (int)src->h };
     return stretch_copybit(dev, dst, src, &dr, &sr, region);
 }
 
 static int finish_copybit(struct copybit_device_t *dev)
 {
     // NOP for MDP copybit
+    return 0;
 }
 
 /*****************************************************************************/

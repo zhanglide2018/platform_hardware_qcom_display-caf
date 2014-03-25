@@ -114,19 +114,24 @@ bool MDPComp::init(hwc_context_t *ctx) {
             sMaxPipesPerMixer = true;
     }
 
-    unsigned long idle_timeout = DEFAULT_IDLE_TIME;
-    if(property_get("debug.mdpcomp.idletime", property, NULL) > 0) {
-        if(atoi(property) != 0)
-            idle_timeout = atoi(property);
-    }
+    if(ctx->mMDP.panel != MIPI_CMD_PANEL) {
+        // Idle invalidation is not necessary on command mode panels
+        long idle_timeout = DEFAULT_IDLE_TIME;
+        if(property_get("debug.mdpcomp.idletime", property, NULL) > 0) {
+            if(atoi(property) != 0)
+                idle_timeout = atoi(property);
+        }
 
-    //create Idle Invalidator
-    idleInvalidator = IdleInvalidator::getInstance();
+        //create Idle Invalidator only when not disabled through property
+        if(idle_timeout != -1)
+            idleInvalidator = IdleInvalidator::getInstance();
 
-    if(idleInvalidator == NULL) {
-        ALOGE("%s: failed to instantiate idleInvalidator object", __FUNCTION__);
-    } else {
-        idleInvalidator->init(timeout_handler, ctx, idle_timeout);
+        if(idleInvalidator == NULL) {
+            ALOGE("%s: failed to instantiate idleInvalidator object",
+                  __FUNCTION__);
+        } else {
+            idleInvalidator->init(timeout_handler, ctx, idle_timeout);
+        }
     }
     return true;
 }
@@ -296,10 +301,14 @@ bool MDPComp::isValidDimension(hwc_context_t *ctx, hwc_layer_1_t *layer) {
         return false;
     }
 
+    //XXX: Investigate doing this with pixel phase on MDSS
+    if(!isSecureBuffer(hnd) && isNonIntegralSourceCrop(layer->sourceCropf))
+        return false;
+
     int hw_w = ctx->dpyAttr[mDpy].xres;
     int hw_h = ctx->dpyAttr[mDpy].yres;
 
-    hwc_rect_t crop = layer->sourceCrop;
+    hwc_rect_t crop = integerizeSourceCrop(layer->sourceCropf);
     hwc_rect_t dst = layer->displayFrame;
 
     if(dst.left < 0 || dst.top < 0 || dst.right > hw_w || dst.bottom > hw_h) {
@@ -366,17 +375,38 @@ ovutils::eDest MDPComp::getMdpPipe(hwc_context_t *ctx, ePipeType type) {
     return ovutils::OV_INVALID;
 }
 
-bool MDPComp::isFrameDoable(hwc_context_t *ctx) {
+bool MDPComp::isFrameDoable(hwc_context_t *ctx, hwc_display_contents_1_t* list)
+{
     bool ret = true;
+    bool isSecureYUVLayer = false;
     const int numAppLayers = ctx->listStats[mDpy].numAppLayers;
 
     if(!isEnabled()) {
         ALOGD_IF(isDebug(),"%s: MDP Comp. not enabled.", __FUNCTION__);
-        ret = false;
-    } else if(ctx->dpyAttr[HWC_DISPLAY_EXTERNAL].isConfiguring ||
-              ctx->dpyAttr[HWC_DISPLAY_VIRTUAL].isConfiguring) {
-        ALOGD_IF( isDebug(),"%s: External Display connection is pending",
-                  __FUNCTION__);
+        return false;
+    } else if(ctx->isPaddingRound) {
+        ALOGD_IF(isDebug(), "%s: padding round invoked for dpy %d",
+                 __FUNCTION__,mDpy);
+        return false;
+    }
+
+    for(int i = 0; i < numAppLayers; ++i) {
+        hwc_layer_1_t* layer = &list->hwLayers[i];
+        private_handle_t *hnd = (private_handle_t *)layer->handle;
+        if(isYuvBuffer(hnd) && isSecureBuffer(hnd)){
+            isSecureYUVLayer = true;
+        }
+    }
+
+    /* Need a check for secureYUVlayers to avoid composing them
+       through FB during pause/resume events */
+    if(!isSecureYUVLayer &&
+       (ctx->dpyAttr[HWC_DISPLAY_EXTERNAL].isConfiguring ||
+        ctx->dpyAttr[HWC_DISPLAY_VIRTUAL].isConfiguring ||
+        ctx->dpyAttr[HWC_DISPLAY_EXTERNAL].isPause ||
+        ctx->dpyAttr[HWC_DISPLAY_VIRTUAL].isPause)) {
+        ALOGD_IF(isDebug(),"%s: External Display connection is pending",
+              __FUNCTION__);
         ret = false;
     }
     return ret;
@@ -389,7 +419,7 @@ bool MDPComp::isFullFrameDoable(hwc_context_t *ctx,
 
     const int numAppLayers = ctx->listStats[mDpy].numAppLayers;
 
-    if(sIdleFallBack) {
+    if(sIdleFallBack && !ctx->listStats[mDpy].secureUI) {
         ALOGD_IF(isDebug(), "%s: Idle fallback dpy %d",__FUNCTION__, mDpy);
         return false;
     }
@@ -410,7 +440,7 @@ bool MDPComp::isFullFrameDoable(hwc_context_t *ctx,
 
     if(ctx->listStats[mDpy].needsAlphaScale
        && (ctx->mMDP.version < qdutils::MDSS_V5)
-       && (ctx->listStats[mDpy].numAppLayers >2)){
+       && ((ctx->listStats[mDpy].numAppLayers >2) || mDpy)){
         ALOGD_IF(isDebug(), "%s: frame needs alpha downscaling",__FUNCTION__);
         return false;
     }
@@ -419,9 +449,27 @@ bool MDPComp::isFullFrameDoable(hwc_context_t *ctx,
         hwc_layer_1_t* layer = &list->hwLayers[i];
         private_handle_t *hnd = (private_handle_t *)layer->handle;
 
+        if((layer->planeAlpha < 0xFF) &&
+                qhwc::needsScaling(ctx,layer,mDpy)){
+            ALOGD_IF(isDebug(),
+                "%s: Disable mixed mode if frame needs plane alpha downscaling",
+                __FUNCTION__);
+            return false;
+        }
+
         if(isYuvBuffer(hnd) ) {
             if(isSecuring(ctx, layer)) {
                 ALOGD_IF(isDebug(), "%s: MDP securing is active", __FUNCTION__);
+                return false;
+            }
+            if((isSecureBuffer(hnd)) &&
+              (ctx->dpyAttr[HWC_DISPLAY_EXTERNAL].isConfiguring ||
+               ctx->dpyAttr[HWC_DISPLAY_VIRTUAL].isConfiguring ||
+               ctx->dpyAttr[HWC_DISPLAY_EXTERNAL].isPause ||
+               ctx->dpyAttr[HWC_DISPLAY_VIRTUAL].isPause)) {
+                ALOGD_IF(isDebug(), "%s: Fall back to VideoOnlyComposition for"
+                         "secure YUV layers during external isConfiguring",
+                         __FUNCTION__);
                 return false;
             }
         }
@@ -799,21 +847,20 @@ bool MDPComp::programYUV(hwc_context_t *ctx, hwc_display_contents_1_t* list) {
 int MDPComp::prepare(hwc_context_t *ctx, hwc_display_contents_1_t* list) {
 
     const int numLayers = ctx->listStats[mDpy].numAppLayers;
-
+    int ret = 1;
     //reset old data
     mCurrentFrame.reset(numLayers);
 
-    //number of app layers exceeds MAX_NUM_APP_LAYERS fall back to GPU
-    //do not cache the information for next draw cycle.
-    if(numLayers > MAX_NUM_APP_LAYERS) {
+    //Do not cache the information for next draw cycle.
+    if(numLayers > MAX_NUM_APP_LAYERS or (!numLayers)) {
         mCachedFrame.updateCounts(mCurrentFrame);
-        ALOGD_IF(isDebug(), "%s: Number of App layers exceeded the limit ",
+        ALOGD_IF(isDebug(), "%s: Unsupported layer count for mdp composition",
                 __FUNCTION__);
         return -1;
     }
 
     //Hard conditions, if not met, cannot do MDP comp
-    if(!isFrameDoable(ctx)) {
+    if(!isFrameDoable(ctx, list)) {
         ALOGD_IF( isDebug(),"%s: MDP Comp not possible for this frame",
                 __FUNCTION__);
         reset(numLayers, list);
@@ -829,6 +876,7 @@ int MDPComp::prepare(hwc_context_t *ctx, hwc_display_contents_1_t* list) {
                         mCurrentFrame.fbZ)) {
                 ALOGE("%s configure framebuffer failed", __func__);
                 reset(numLayers, list);
+                ctx->mOverlay->clear(mDpy);
                 return -1;
             } else { //Success
                 //Any change in composition types needs an FB refresh
@@ -848,6 +896,8 @@ int MDPComp::prepare(hwc_context_t *ctx, hwc_display_contents_1_t* list) {
         //Acquire and Program MDP pipes
         if(!programMDP(ctx, list)) {
             reset(numLayers, list);
+            ctx->mOverlay->clear(mDpy);
+            ctx->mLayerRotMap[mDpy]->clear();
             return -1;
         } else { //Success
             //Any change in composition types needs an FB refresh
@@ -878,13 +928,17 @@ int MDPComp::prepare(hwc_context_t *ctx, hwc_display_contents_1_t* list) {
             if(!ctx->mFBUpdate[mDpy]->prepare(ctx, list, mCurrentFrame.fbZ)) {
                 ALOGE("%s configure framebuffer failed", __func__);
                 reset(numLayers, list);
+                ctx->mOverlay->clear(mDpy);
                 return -1;
             }
         }
         if(!programYUV(ctx, list)) {
             reset(numLayers, list);
+            ctx->mOverlay->clear(mDpy);
+            ctx->mLayerRotMap[mDpy]->clear();
             return -1;
-        }
+        } else
+            ret = 0;
     } else {
         reset(numLayers, list);
         return -1;
@@ -903,7 +957,7 @@ int MDPComp::prepare(hwc_context_t *ctx, hwc_display_contents_1_t* list) {
         ALOGE("%s",sDump.string());
     }
 
-    return 0;
+    return ret;
 }
 
 //=============MDPCompLowRes===================================================

@@ -93,14 +93,28 @@ eDest Overlay::nextPipe(eMdpPipeType type, int dpy) {
     for(int i = 0; i < PipeBook::NUM_PIPES; i++) {
         //Match requested pipe type
         if(type == OV_MDP_PIPE_ANY || type == PipeBook::getPipeType((eDest)i)) {
-            //If the pipe is not allocated to any display or used by the
-            //requesting display already in previous round.
-            if((mPipeBook[i].mDisplay == DPY_UNUSED ||
-                    mPipeBook[i].mDisplay == dpy) &&
+            //Check if the pipe is used by the requested display
+            //already in previous round.
+            if(mPipeBook[i].mDisplay == dpy &&
                     PipeBook::isNotAllocated(i)) {
                 dest = (eDest)i;
                 PipeBook::setAllocation(i);
                 break;
+            }
+        }
+    }
+
+    if(dest == OV_INVALID) {
+        for(int i = 0; i < PipeBook::NUM_PIPES; i++) {
+            //Match requested pipe type
+            if(type == OV_MDP_PIPE_ANY || type == PipeBook::getPipeType((eDest)i)) {
+                //Check if the pipe is not allocated to any display
+                if(mPipeBook[i].mDisplay == DPY_UNUSED &&
+                   PipeBook::isNotAllocated(i)) {
+                    dest = (eDest)i;
+                    PipeBook::setAllocation(i);
+                    break;
+                }
             }
         }
     }
@@ -333,7 +347,7 @@ void Overlay::getDump(char *buf, size_t len) {
     const char *str = "\nOverlay State\n==========================\n";
     strncat(buf, str, strlen(str));
     for(int i = 0; i < PipeBook::NUM_PIPES; i++) {
-        if(mPipeBook[i].valid()) {
+        if(mPipeBook[i].valid() && mPipeBook[i].isUsed(i)) {
             mPipeBook[i].mPipe->getDump(buf, len);
             char str[64] = {'\0'};
             snprintf(str, 64, "Attached to dpy=%d\n\n", mPipeBook[i].mDisplay);

@@ -8,12 +8,11 @@ common_includes += hardware/qcom/display-caf/libexternal
 common_includes += hardware/qcom/display-caf/libqservice
 common_includes += hardware/qcom/display-caf/libvirtual
 
-ifeq ($(TARGET_USES_POST_PROCESSING),true)
-    common_flags     += -DUSES_POST_PROCESSING
-    common_includes += $(TARGET_OUT_HEADERS)/pp/inc
+ifeq ($(QCOM_BSP_WITH_GENLOCK),true)
+    common_includes += hardware/qcom/display-caf/libgenlock
 endif
 
-common_header_export_path := qcom/display-caf
+common_header_export_path := qcom/display
 
 #Common libraries external to display-caf HAL
 common_libs := liblog libutils libcutils libhardware
@@ -38,6 +37,7 @@ ifeq ($(TARGET_USES_QCOM_BSP),true)
 endif
 
 ifeq ($(call is-vendor-board-platform,QCOM),true)
+
 common_deps += $(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ/usr
 kernel_includes += $(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ/usr/include
 endif
@@ -48,4 +48,8 @@ endif
 
 ifneq ($(TARGET_DISPLAY_INSECURE_MM_HEAP),true)
     common_flags += -DSECURE_MM_HEAP
+endif
+
+ifeq ($(TARGET_BOARD_PLATFORM),msm8660)
+    common_flags += -DNO_IOMMU
 endif
